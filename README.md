@@ -93,3 +93,4 @@ Projeto de análise de inadimplência em pagamentos recorrentes mensais na empre
 - LinkedIn: [linkedin.com/in/flávio-henrique-barbosa-38465938](https://www.linkedin.com/in/fl%C3%A1vio-henrique-barbosa-38465938)
 - Email: [flaviohenriquehb777@outlook.com](mailto:flaviohenriquehb777@outlook.com)
  
+ 
