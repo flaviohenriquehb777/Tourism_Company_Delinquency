@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540">
+  <rect width="960" height="540" fill="#111"/>
+  <rect x="40" y="40" width="880" height="460" rx="16" fill="#1a1a1a" stroke="#2a2a2a"/>
+  <text x="60" y="90" fill="#eaeaea" font-family="Arial, sans-serif" font-size="28" font-weight="700">Tourism Company – Dashboard de Inadimplência</text>
+  <rect x="60" y="120" width="380" height="150" fill="#222" stroke="#333"/>
+  <rect x="460" y="120" width="420" height="150" fill="#222" stroke="#333"/>
+  <rect x="60" y="290" width="820" height="180" fill="#222" stroke="#333"/>
+  <polyline points="80,240 140,210 200,220 260,180 320,190 380,160 420,170" fill="none" stroke="#7ad7ff" stroke-width="3"/>
+  <polyline points="480,240 540,230 600,210 660,200 720,190 780,180 860,170" fill="none" stroke="#b388ff" stroke-width="3"/>
+  <rect x="80" y="420" width="200" height="30" fill="#7ad7ff" opacity="0.6"/>
+  <rect x="300" y="420" width="200" height="30" fill="#b388ff" opacity="0.6"/>
+  <text x="80" y="410" fill="#bbb" font-size="16">Receita Esperada vs Recebida</text>
+  <text x="480" y="110" fill="#bbb" font-size="16">Inadimplência ao Longo do Tempo</text>
+  <text x="60" y="110" fill="#bbb" font-size="16">Ticket Médio e Vendas</text>
+</svg>
