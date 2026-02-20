@@ -63,6 +63,47 @@ def _prep_alloc_dim(sales: pd.DataFrame, allocated: pd.DataFrame) -> pd.DataFram
     return g
 
 
+def _prep_pay_dim(sales: pd.DataFrame, allocated: pd.DataFrame) -> pd.DataFrame:
+    s = sales.copy()
+    a = allocated.copy()
+
+    for col in ["product_name", "region", "payment_method", "gender", "product_code"]:
+        if col not in s.columns:
+            s[col] = None
+
+    a = a.merge(
+        s[
+            [
+                "contract_id",
+                "purchase_date",
+                "product_name",
+                "region",
+                "payment_method",
+                "premium",
+            ]
+        ],
+        on="contract_id",
+        how="left",
+    )
+    a = a[a["payment_date_eff"].notna()].copy()
+    a["month"] = _month(a["payment_date_eff"])
+    a["expected"] = 0.0
+    a["received"] = pd.to_numeric(a["paid_amount"], errors="coerce").fillna(0.0)
+    a["recurring"] = a["recurring"].fillna(False)
+
+    a["product_name"] = a["product_name"].fillna("Desconhecido").astype(str)
+    a["region"] = a["region"].fillna("Desconhecida").astype(str)
+    a["payment_method"] = a["payment_method"].fillna("Desconhecida").astype(str)
+
+    g = (
+        a.groupby(["month", "product_name", "region", "payment_method", "recurring"], as_index=False)
+        .agg(expected=("expected", "sum"), received=("received", "sum"))
+        .sort_values(["month", "product_name"])
+    )
+    g["month"] = pd.to_datetime(g["month"], errors="coerce").dt.to_period("M").astype(str)
+    return g
+
+
 def _prep_cohort_dim(sales: pd.DataFrame, allocated: pd.DataFrame) -> pd.DataFrame:
     s = sales.copy()
     a = allocated.copy()
@@ -102,8 +143,9 @@ def _prep_cohort_dim(sales: pd.DataFrame, allocated: pd.DataFrame) -> pd.DataFra
     return g
 
 
-def _html(data_alloc: list[dict], data_cohort: list[dict]) -> str:
-    payload_alloc = json.dumps(data_alloc, ensure_ascii=False)
+def _html(data_alloc_due: list[dict], data_alloc_pay: list[dict], data_cohort: list[dict]) -> str:
+    payload_alloc_due = json.dumps(data_alloc_due, ensure_ascii=False)
+    payload_alloc_pay = json.dumps(data_alloc_pay, ensure_ascii=False)
     payload_cohort = json.dumps(data_cohort, ensure_ascii=False)
 
     tpl = """<!doctype html>
@@ -217,9 +259,9 @@ def _html(data_alloc: list[dict], data_cohort: list[dict]) -> str:
 
         <section id="tab-caixa" class="tab">
           <div class="cards">
-            <div class="card"><div class="k">Receita Esperada (mensal)</div><div class="v" id="kpiEspMensal">—</div><div class="s">Somatório por mês</div></div>
-            <div class="card"><div class="k">Receita Real (mensal)</div><div class="v" id="kpiRecMensal">—</div><div class="s">Somatório por mês</div></div>
-            <div class="card"><div class="k">% Inadimplência (mensal)</div><div class="v" id="kpiInadMensal">—</div><div class="s">Gap esperado vs recebido</div></div>
+            <div class="card"><div class="k">Receita Esperada (fluxo de caixa)</div><div class="v" id="kpiEspMensal">—</div><div class="s">Base: mês de vencimento</div></div>
+            <div class="card"><div class="k">Receita Real (fluxo de caixa)</div><div class="v" id="kpiRecMensal">—</div><div class="s">Base: mês de pagamento</div></div>
+            <div class="card"><div class="k">Inadimplência (fluxo de caixa)</div><div class="v" id="kpiInadMensal">—</div><div class="s">Esperado - recebido</div></div>
           </div>
           <div class="panel">
             <h3>Receita Esperada vs Receita Real (área) — gap = inadimplência</h3>
@@ -265,7 +307,8 @@ def _html(data_alloc: list[dict], data_cohort: list[dict]) -> str:
     </div>
 
     <script>
-      const dataAlloc = __DATA_ALLOC__;
+      const dataAllocDue = __DATA_ALLOC_DUE__;
+      const dataAllocPay = __DATA_ALLOC_PAY__;
       const dataCohort = __DATA_COHORT__;
 
       const state = {{
@@ -314,7 +357,7 @@ def _html(data_alloc: list[dict], data_cohort: list[dict]) -> str:
         return true;
       }};
 
-      const allocRowsAll = (exceptKey) => dataAlloc
+      const allocDueRowsAll = (exceptKey) => dataAllocDue
         .map(r => ({{
           ...r,
           month: String(r.month),
@@ -322,6 +365,17 @@ def _html(data_alloc: list[dict], data_cohort: list[dict]) -> str:
           received: Number(r.received) || 0,
           recurring: toBool(r.recurring),
         }}))
+        .filter(r => filtersOk(r, exceptKey));
+
+      const allocPayRowsAll = (exceptKey) => dataAllocPay
+        .map(r => ({{
+          ...r,
+          month: String(r.month),
+          expected: Number(r.expected) || 0,
+          received: Number(r.received) || 0,
+          recurring: toBool(r.recurring),
+        }}))
+        .filter(r => r.month && r.month !== 'NaT')
         .filter(r => filtersOk(r, exceptKey));
 
       const toggleFilter = (key, value) => {{
@@ -382,9 +436,9 @@ def _html(data_alloc: list[dict], data_cohort: list[dict]) -> str:
       }};
 
       const buildFilters = () => {{
-        const allProd = uniq(byKey(dataAlloc, 'product_name')).sort();
-        const allReg = uniq(byKey(dataAlloc, 'region')).sort();
-        const allMet = uniq(byKey(dataAlloc, 'payment_method')).sort();
+        const allProd = uniq(byKey(dataAllocDue, 'product_name')).sort();
+        const allReg = uniq(byKey(dataAllocDue, 'region')).sort();
+        const allMet = uniq(byKey(dataAllocDue, 'payment_method')).sort();
 
         const sel = (id, label, values) => {{
           const el = document.getElementById(id);
@@ -446,9 +500,9 @@ def _html(data_alloc: list[dict], data_cohort: list[dict]) -> str:
       }};
 
       const setKpis = () => {{
-        const rowsAll = allocRowsAll();
-        const cutoff = cutoffMonth(rowsAll);
-        const rows = observedRows(rowsAll, cutoff);
+        const rowsDueAll = allocDueRowsAll();
+        const cutoff = cutoffMonth(allocPayRowsAll()) || cutoffMonth(rowsDueAll);
+        const rows = observedRows(rowsDueAll, cutoff);
         const t = aggTotals(rows);
         document.getElementById('kpiEsperada').textContent = fmtMoney(t.exp);
         document.getElementById('kpiRecebida').textContent = fmtMoney(t.rec);
@@ -462,8 +516,8 @@ def _html(data_alloc: list[dict], data_cohort: list[dict]) -> str:
       }};
 
       const renderProd = () => {{
-        const cutoff = cutoffMonth(allocRowsAll());
-        const rows = observedRows(allocRowsAll('product'), cutoff);
+        const cutoff = cutoffMonth(allocPayRowsAll()) || cutoffMonth(allocDueRowsAll());
+        const rows = observedRows(allocDueRowsAll('product'), cutoff);
         const agg = aggBy(rows, 'product_name', 10);
         const y = agg.map(x => x.k).reverse();
         const x = agg.map(x => x.inad*100).reverse();
@@ -504,8 +558,8 @@ def _html(data_alloc: list[dict], data_cohort: list[dict]) -> str:
       }};
 
       const renderReg = () => {{
-        const cutoff = cutoffMonth(allocRowsAll());
-        const rows = observedRows(allocRowsAll('region'), cutoff);
+        const cutoff = cutoffMonth(allocPayRowsAll()) || cutoffMonth(allocDueRowsAll());
+        const rows = observedRows(allocDueRowsAll('region'), cutoff);
         const agg = aggBy(rows, 'region', 12);
         const y = agg.map(x => x.k).reverse();
         const x = agg.map(x => x.inad*100).reverse();
@@ -536,8 +590,8 @@ def _html(data_alloc: list[dict], data_cohort: list[dict]) -> str:
       }};
 
       const renderForma = () => {{
-        const cutoff = cutoffMonth(allocRowsAll());
-        const rows = observedRows(allocRowsAll('method'), cutoff);
+        const cutoff = cutoffMonth(allocPayRowsAll()) || cutoffMonth(allocDueRowsAll());
+        const rows = observedRows(allocDueRowsAll('method'), cutoff);
         const agg = aggBy(rows, 'payment_method', 12);
         agg.sort((a,b) => b.exp - a.exp);
         const x = agg.map(x => x.k);
@@ -586,53 +640,61 @@ def _html(data_alloc: list[dict], data_cohort: list[dict]) -> str:
       }};
 
       const renderCash = () => {{
-        const rowsAll = allocRowsAll();
-        const cutoff = cutoffMonth(rowsAll);
-        const mAll = aggMonthly(rowsAll);
-        const mObs = cutoff ? mAll.filter(x => x.month <= cutoff) : mAll;
-        const sumE = mObs.reduce((a, x) => a + x.exp, 0);
-        const sumR = mObs.reduce((a, x) => a + x.rec, 0);
-        const sumI = sumE > 0 ? Math.max(0, 1 - (sumR / sumE)) : 0;
+        const dueAll = allocDueRowsAll();
+        const payAll = allocPayRowsAll();
+        const cutoff = cutoffMonth(payAll) || cutoffMonth(dueAll);
+        const expAgg = aggMonthly(dueAll);
+        const recAgg = aggMonthly(payAll);
+        const expMap = new Map(expAgg.map(x => [x.month, x.exp]));
+        const recMap = new Map(recAgg.map(x => [x.month, x.rec]));
+        const monthsAll = uniq([...Array.from(expMap.keys()), ...Array.from(recMap.keys())]).sort();
+        const months = cutoff ? monthsAll.filter(m => m <= cutoff) : monthsAll;
+
+        const expected = months.map(m => expMap.get(m) || 0);
+        const received = months.map(m => recMap.get(m) || 0);
+        const gap = months.map((m, i) => expected[i] - received[i]);
+
+        const sumE = expected.reduce((a, x) => a + x, 0);
+        const sumR = received.reduce((a, x) => a + x, 0);
+        const sumG = gap.reduce((a, x) => a + x, 0);
         document.getElementById('kpiEspMensal').textContent = fmtMoney(sumE);
         document.getElementById('kpiRecMensal').textContent = fmtMoney(sumR);
-        document.getElementById('kpiInadMensal').textContent = fmtPct(sumI);
+        document.getElementById('kpiInadMensal').textContent = fmtMoney(sumG);
 
-        const months = mAll.map(x => x.month);
-        const expectedAll = mAll.map(x => x.exp);
-        const expectedObs = mAll.map(x => (cutoff && x.month > cutoff) ? null : x.exp);
-        const receivedObs = mAll.map(x => (cutoff && x.month > cutoff) ? null : x.rec);
-        const custom = mAll.map(x => {{
-          const inad = x.exp > 0 ? Math.max(0, 1 - (x.rec / x.exp)) : 0;
-          const open = cutoff && x.month > cutoff;
-          return [x.rec, x.exp, inad, open ? 'Não observado' : 'Observado'];
+        const custom = months.map((m, i) => {{
+          const e = expected[i] || 0;
+          const r = received[i] || 0;
+          const g = e - r;
+          const inadPct = e > 0 ? (1 - (r / e)) : 0;
+          return [r, e, g, inadPct];
         }});
 
         Plotly.react('plotCash', [
           {{
             type: 'scatter',
-            x: months, y: receivedObs,
+            x: months, y: received,
             name: 'Receita real',
             mode: 'lines',
             fill: 'tozeroy',
             line: {{ color: 'rgba(99, 179, 237, 1)', width: 2 }},
             fillcolor: 'rgba(99, 179, 237, 0.25)',
             customdata: custom,
-            hovertemplate: 'Mês: %{x}<br>Status: %{customdata[3]}<br>Recebido: R$ %{customdata[0]:,.0f}<br>Esperado: R$ %{customdata[1]:,.0f}<br>Inadimplência: %{customdata[2]:.1%}<extra></extra>'
+            hovertemplate: 'Mês: %{x}<br>Recebido: R$ %{customdata[0]:,.0f}<br>Esperado: R$ %{customdata[1]:,.0f}<br>Inadimplência (R$): %{customdata[2]:,.0f}<br>% Inadimplência: %{customdata[3]:.1%}<extra></extra>'
           }},
           {{
             type: 'scatter',
-            x: months, y: expectedObs,
-            name: 'Gap (inadimplência)',
+            x: months, y: expected,
+            name: 'Inadimplência (gap)',
             mode: 'lines',
             fill: 'tonexty',
             line: {{ color: 'rgba(0,0,0,0)', width: 0 }},
             fillcolor: 'rgba(251, 191, 36, 0.18)',
             customdata: custom,
-            hovertemplate: 'Mês: %{x}<br>Status: %{customdata[3]}<br>Recebido: R$ %{customdata[0]:,.0f}<br>Esperado: R$ %{customdata[1]:,.0f}<br>Inadimplência: %{customdata[2]:.1%}<extra></extra>'
+            hovertemplate: 'Mês: %{x}<br>Recebido: R$ %{customdata[0]:,.0f}<br>Esperado: R$ %{customdata[1]:,.0f}<br>Inadimplência (R$): %{customdata[2]:,.0f}<br>% Inadimplência: %{customdata[3]:.1%}<extra></extra>'
           }},
           {{
             type: 'scatter',
-            x: months, y: expectedAll,
+            x: months, y: expected,
             name: 'Receita esperada',
             mode: 'lines',
             line: {{ color: 'rgba(232, 237, 247, 0.85)', width: 2 }},
@@ -706,7 +768,7 @@ def _html(data_alloc: list[dict], data_cohort: list[dict]) -> str:
       }};
 
       const renderCohort = () => {{
-        const cutoff = cutoffMonth(allocRowsAll());
+        const cutoff = cutoffMonth(allocPayRowsAll()) || cutoffMonth(allocDueRowsAll());
         const rows = cohortRows(cutoff);
         const sum = cohortSummary(rows);
         let exp=0, rec=0;
@@ -906,23 +968,33 @@ def _html(data_alloc: list[dict], data_cohort: list[dict]) -> str:
 </html>
 """
     tpl = tpl.replace("{{", "{").replace("}}", "}")
-    return tpl.replace("__DATA_ALLOC__", payload_alloc).replace("__DATA_COHORT__", payload_cohort)
+    return (
+        tpl.replace("__DATA_ALLOC_DUE__", payload_alloc_due)
+        .replace("__DATA_ALLOC_PAY__", payload_alloc_pay)
+        .replace("__DATA_COHORT__", payload_cohort)
+    )
 
 
 def main() -> None:
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     sales, allocated = _load()
-    alloc_dim = _prep_alloc_dim(sales, allocated)
+    alloc_due_dim = _prep_alloc_dim(sales, allocated)
+    alloc_pay_dim = _prep_pay_dim(sales, allocated)
     cohort_dim = _prep_cohort_dim(sales, allocated)
 
-    data_alloc = alloc_dim.rename(
+    data_alloc_due = alloc_due_dim.rename(
+        columns={"product_name": "product_name", "region": "region", "payment_method": "payment_method"}
+    ).to_dict(orient="records")
+    data_alloc_pay = alloc_pay_dim.rename(
         columns={"product_name": "product_name", "region": "region", "payment_method": "payment_method"}
     ).to_dict(orient="records")
     data_cohort = cohort_dim.rename(
         columns={"product_name": "product_name", "region": "region", "payment_method": "payment_method"}
     ).to_dict(orient="records")
 
-    (REPORTS_DIR / "dashboard.html").write_text(_html(data_alloc, data_cohort), encoding="utf-8")
+    (REPORTS_DIR / "dashboard.html").write_text(
+        _html(data_alloc_due, data_alloc_pay, data_cohort), encoding="utf-8"
+    )
     print(str(REPORTS_DIR / "dashboard.html"))
 
 
