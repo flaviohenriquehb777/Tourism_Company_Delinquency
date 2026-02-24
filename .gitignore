@@ -1,0 +1,9 @@
+__pycache__/
+**/__pycache__/
+*.pyc
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
+reports/.ipynb_checkpoints/
+scripts/__pycache__/
+
+data/processed/
