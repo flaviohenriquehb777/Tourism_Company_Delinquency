@@ -198,6 +198,116 @@ def _prep_sales_cohort_dim(sales: pd.DataFrame) -> pd.DataFrame:
     return g
 
 
+def _prep_recurring_matured_dim(sales: pd.DataFrame, allocated: pd.DataFrame) -> pd.DataFrame:
+    s = sales.copy()
+    a = allocated.copy()
+
+    for col in ["product_name", "region", "payment_method"]:
+        if col not in s.columns:
+            s[col] = None
+
+    s["contract_id"] = s["contract_id"].astype(str)
+    s["purchase_date"] = pd.to_datetime(s["purchase_date"], errors="coerce")
+    s["installments_total"] = (
+        pd.to_numeric(s.get("installments_total"), errors="coerce").fillna(0).astype(int).clip(lower=0)
+    )
+    s["recurring"] = s.get("recurring", False)
+    s["recurring"] = s["recurring"].fillna(False).astype(bool)
+
+    vmax = s["purchase_date"].max()
+    if pd.isna(vmax):
+        return pd.DataFrame(columns=["product_name", "region", "payment_method", "expected", "received"])
+
+    s_rec = s[(s["recurring"] == True) & s["purchase_date"].notna()].copy()
+    if len(s_rec) == 0:
+        return pd.DataFrame(columns=["product_name", "region", "payment_method", "expected", "received"])
+
+    months_diff = (vmax.year - s_rec["purchase_date"].dt.year) * 12 + (vmax.month - s_rec["purchase_date"].dt.month)
+    s_rec["matured"] = months_diff.astype(int) >= s_rec["installments_total"].astype(int)
+
+    dim = s_rec.loc[
+        s_rec["matured"] == True,
+        ["contract_id", "product_name", "region", "payment_method"],
+    ].copy()
+    if len(dim) == 0:
+        return pd.DataFrame(columns=["product_name", "region", "payment_method", "expected", "received"])
+
+    dim["product_name"] = dim["product_name"].fillna("Desconhecido").astype(str)
+    dim["region"] = dim["region"].fillna("Desconhecida").astype(str)
+    dim["payment_method"] = dim["payment_method"].fillna("Desconhecida").astype(str)
+
+    a["contract_id"] = a["contract_id"].astype(str)
+    a = a.merge(dim, on="contract_id", how="inner")
+    a["expected"] = pd.to_numeric(a["expected_amount"], errors="coerce").fillna(0.0)
+    a["received"] = pd.to_numeric(a["paid_amount"], errors="coerce").fillna(0.0)
+
+    g = (
+        a.groupby(["product_name", "region", "payment_method"], as_index=False)
+        .agg(expected=("expected", "sum"), received=("received", "sum"))
+        .sort_values(["product_name", "region", "payment_method"])
+    )
+    return g
+
+
+def _prep_recurring_matured_fact(sales: pd.DataFrame, allocated: pd.DataFrame) -> pd.DataFrame:
+    s = sales.copy()
+    a = allocated.copy()
+
+    for col in ["product_name", "region", "payment_method"]:
+        if col not in s.columns:
+            s[col] = None
+
+    s["contract_id"] = s["contract_id"].astype(str)
+    s["purchase_date"] = pd.to_datetime(s["purchase_date"], errors="coerce")
+    s["installments_total"] = (
+        pd.to_numeric(s.get("installments_total"), errors="coerce").fillna(0).astype(int).clip(lower=0)
+    )
+    s["recurring"] = s.get("recurring", False)
+    s["recurring"] = s["recurring"].fillna(False).astype(bool)
+
+    vmax = s["purchase_date"].max()
+    if pd.isna(vmax):
+        return pd.DataFrame(
+            columns=["purchase_month", "product_name", "region", "payment_method", "expected", "received"]
+        )
+
+    s_rec = s[(s["recurring"] == True) & s["purchase_date"].notna()].copy()
+    if len(s_rec) == 0:
+        return pd.DataFrame(
+            columns=["purchase_month", "product_name", "region", "payment_method", "expected", "received"]
+        )
+
+    months_diff = (vmax.year - s_rec["purchase_date"].dt.year) * 12 + (vmax.month - s_rec["purchase_date"].dt.month)
+    s_rec["matured"] = months_diff.astype(int) >= s_rec["installments_total"].astype(int)
+    s_rec["purchase_month"] = _month(s_rec["purchase_date"])
+
+    dim = s_rec.loc[
+        (s_rec["matured"] == True) & s_rec["purchase_month"].notna(),
+        ["contract_id", "purchase_month", "product_name", "region", "payment_method"],
+    ].copy()
+    if len(dim) == 0:
+        return pd.DataFrame(
+            columns=["purchase_month", "product_name", "region", "payment_method", "expected", "received"]
+        )
+
+    dim["product_name"] = dim["product_name"].fillna("Desconhecido").astype(str)
+    dim["region"] = dim["region"].fillna("Desconhecida").astype(str)
+    dim["payment_method"] = dim["payment_method"].fillna("Desconhecida").astype(str)
+
+    a["contract_id"] = a["contract_id"].astype(str)
+    a = a.merge(dim, on="contract_id", how="inner")
+    a["expected"] = pd.to_numeric(a["expected_amount"], errors="coerce").fillna(0.0)
+    a["received"] = pd.to_numeric(a["paid_amount"], errors="coerce").fillna(0.0)
+
+    g = (
+        a.groupby(["purchase_month", "product_name", "region", "payment_method"], as_index=False)
+        .agg(expected=("expected", "sum"), received=("received", "sum"))
+        .sort_values(["purchase_month", "product_name"])
+    )
+    g["purchase_month"] = pd.to_datetime(g["purchase_month"], errors="coerce").dt.to_period("M").astype(str)
+    return g
+
+
 def _prep_cohort_dim(sales: pd.DataFrame, allocated: pd.DataFrame) -> pd.DataFrame:
     s = sales.copy()
     a = allocated.copy()
@@ -243,12 +353,16 @@ def _html(
     data_cohort: list[dict],
     data_sales_cube: list[dict],
     data_sales_cohort: list[dict],
+    data_rec_matured: list[dict],
+    data_rec_matured_fact: list[dict],
 ) -> str:
     payload_alloc_due = json.dumps(data_alloc_due, ensure_ascii=False)
     payload_alloc_pay = json.dumps(data_alloc_pay, ensure_ascii=False)
     payload_cohort = json.dumps(data_cohort, ensure_ascii=False)
     payload_sales_cube = json.dumps(data_sales_cube, ensure_ascii=False)
     payload_sales_cohort = json.dumps(data_sales_cohort, ensure_ascii=False)
+    payload_rec_matured = json.dumps(data_rec_matured, ensure_ascii=False)
+    payload_rec_matured_fact = json.dumps(data_rec_matured_fact, ensure_ascii=False)
 
     tpl = """<!doctype html>
 <html lang="pt-br">
@@ -281,10 +395,18 @@ def _html(
       .title {{ font-weight: 800; letter-spacing: 0.5px; font-size: 20px; }}
       .filters {{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }}
       .filters select {{ background: rgba(255,255,255,0.05); border: 1px solid var(--border); color: var(--text); border-radius: 12px; padding: 10px 12px; outline:none; }}
-      .grid {{ display:grid; grid-template-columns: 1.4fr 1fr 360px; gap: 14px; align-items: stretch; }}
+      .gridTop {{ display:grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: stretch; margin-bottom: 14px; }}
+      .gridBottom {{ display:grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; align-items: stretch; }}
+      .span2 {{ grid-column: 1 / span 2; }}
+      .summaryCards {{ display:flex; flex-direction:column; gap: 8px; }}
+      .summaryCards .card {{ padding: 8px 12px; }}
+      .summaryCards .card .k {{ font-size: 11px; }}
+      .summaryCards .card .v {{ font-size: 18px; margin-top: 2px; }}
+      .summaryCards .card .s {{ font-size: 11px; margin-top: 3px; }}
       .panel {{ background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.02)); border: 1px solid var(--border); border-radius: 18px; padding: 12px 12px; }}
       .panel h3 {{ margin: 6px 8px 10px; font-size: 13px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.7px; }}
       .cards {{ display:grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 14px; }}
+      .cards4 {{ display:grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 14px; }}
       .card {{ background: linear-gradient(180deg, rgba(124,92,255,0.10), rgba(255,255,255,0.02)); border: 1px solid var(--border); border-radius: 18px; padding: 14px 14px; }}
       .card .k {{ color: var(--muted); font-size: 12px; }}
       .card .v {{ font-size: 22px; font-weight: 800; margin-top: 4px; }}
@@ -301,6 +423,8 @@ def _html(
       .full {{ grid-column: 1 / -1; }}
       .plot {{ width: 100%; height: 360px; }}
       .plotTall {{ width: 100%; height: 520px; }}
+      .plotScroll {{ width: 100%; height: 520px; overflow-x: auto; overflow-y: hidden; }}
+      .plotInner {{ height: 520px; min-width: 100%; }}
       .tableWrap {{ overflow:auto; max-height: 520px; }}
       table {{ width:100%; border-collapse: collapse; font-size: 12px; }}
       thead th {{ position: sticky; top: 0; background: rgba(10,14,28,0.95); border-bottom: 1px solid var(--border); padding: 10px 8px; text-align:left; }}
@@ -335,26 +459,28 @@ def _html(
             <div class="card"><div class="k">Receita Real (parcelas)</div><div class="v" id="kpiRecebida">—</div><div class="s">Soma do valor recebido</div></div>
             <div class="card"><div class="k">% Inadimplência (financeira)</div><div class="v" id="kpiInad">—</div><div class="s">1 - recebido/esperado</div></div>
           </div>
-          <div class="grid">
+          <div class="gridTop">
             <div class="panel">
-              <h3>% Inadimplência por Produto (clique para filtrar)</h3>
+              <h3>% Inadimplência por Produto</h3>
               <div id="plotProd" class="plot"></div>
             </div>
             <div class="panel">
-              <h3>% Inadimplência por Região (clique para filtrar)</h3>
+              <h3>% Inadimplência por Região</h3>
               <div id="plotReg" class="plot"></div>
             </div>
-            <div class="rightbox">
-              <h3>Resumo</h3>
-              <div class="metricrow"><div class="lbl">Vendas (contratos)</div><div class="val" id="kpiVendas">—</div></div>
-              <div class="metricrow"><div class="lbl">Clientes</div><div class="val" id="kpiClientes">—</div></div>
-              <div class="metricrow"><div class="lbl">% Recorrentes (share)</div><div class="val" id="kpiRecShare">—</div></div>
-              <div class="metricrow"><div class="lbl">Forma selecionada</div><div class="val" id="kpiForma">—</div></div>
-              <div class="hint">Clique nos gráficos para filtrar. Use “Limpar seleção” para voltar ao total.</div>
-            </div>
-            <div class="panel full">
-              <h3>% Inadimplência e Share Recorrente por Forma de Pagamento (clique para filtrar)</h3>
+          </div>
+          <div class="gridBottom">
+            <div class="panel span2">
+              <h3>% Inadimplência e Vendas Recorrentes por Forma de Pagamento</h3>
               <div id="plotForma" class="plot"></div>
+            </div>
+            <div class="summaryCards">
+              <div class="card"><div class="k">Vendas (contratos)</div><div class="v" id="kpiVendas">—</div><div class="s">Total de vendas</div></div>
+              <div class="card"><div class="k">Vendas Pgto Normal</div><div class="v" id="kpiVendasNorm">—</div><div class="s">Sem recorrência</div></div>
+              <div class="card"><div class="k">Vendas Recorrentes</div><div class="v" id="kpiVendasRec">—</div><div class="s">Com recorrência</div></div>
+              <div class="card"><div class="k">% Recorrentes</div><div class="v" id="kpiRecShare">—</div><div class="s">Recorrentes / total</div></div>
+              <div class="card"><div class="k">Qtd Clientes</div><div class="v" id="kpiClientes">—</div><div class="s">Clientes únicos</div></div>
+              <div class="card"><div class="k">Forma selecionada</div><div class="v" id="kpiForma">—</div><div class="s">Filtro atual</div></div>
             </div>
           </div>
         </section>
@@ -367,15 +493,16 @@ def _html(
           </div>
           <div class="panel">
             <h3>Receita Esperada vs Receita Real (área) — gap = inadimplência</h3>
-            <div id="plotCash" class="plotTall"></div>
+            <div id="plotCashWrap" class="plotScroll"><div id="plotCash" class="plotInner"></div></div>
           </div>
         </section>
 
         <section id="tab-cohort" class="tab">
-          <div class="cards">
-            <div class="card"><div class="k">Receita Esperada (cohorts)</div><div class="v" id="kpiCohEsp">—</div><div class="s">Acumulado por cohort</div></div>
-            <div class="card"><div class="k">Receita Real (cohorts)</div><div class="v" id="kpiCohRec">—</div><div class="s">Acumulado por cohort</div></div>
-            <div class="card"><div class="k">% Inadimplência (cohorts)</div><div class="v" id="kpiCohInad">—</div><div class="s">No último mês observado</div></div>
+          <div class="cards4">
+            <div class="card"><div class="k">Receita Esperada Parc.</div><div class="v" id="kpiCohEspParc">—</div><div class="s">Recorrentes</div></div>
+            <div class="card"><div class="k">Receita Real Parc.</div><div class="v" id="kpiCohRecParc">—</div><div class="s">Recorrentes</div></div>
+            <div class="card"><div class="k">Vendas</div><div class="v" id="kpiCohVendas">—</div><div class="s">Total de vendas</div></div>
+            <div class="card"><div class="k">% Recorrentes</div><div class="v" id="kpiCohPctRec">—</div><div class="s">Vendas recorrentes / vendas</div></div>
           </div>
           <div class="panel">
             <h3>Análise Cohort (% Inadimplência e % Recorrente por cohort de compra)</h3>
@@ -414,6 +541,8 @@ def _html(
       const dataCohort = __DATA_COHORT__;
       const dataSalesCube = __DATA_SALES_CUBE__;
       const dataSalesCohort = __DATA_SALES_COHORT__;
+      const dataRecMatured = __DATA_REC_MATURED__;
+      const dataRecMaturedFact = __DATA_REC_MATURED_FACT__;
 
       const state = {{
         product: null,
@@ -453,11 +582,28 @@ def _html(
       const observedRows = (rows, mCutoff) => mCutoff ? rows.filter(r => r.month <= mCutoff) : rows;
 
       const filtersOk = (r, exceptKey) => {{
+        if (r.region === 'Desconhecido' || r.region === 'Desconhecida') return false;
         if (exceptKey !== 'product' && state.product && r.product_name !== state.product) return false;
         if (exceptKey !== 'region' && state.region && r.region !== state.region) return false;
         if (exceptKey !== 'method' && state.method && r.payment_method !== state.method) return false;
         if (state.recurring === true && r.recurring !== true) return false;
         if (state.recurring === false && r.recurring !== false) return false;
+        return true;
+      }};
+
+      const recFiltersOk = (r, exceptKey) => {{
+        if (r.region === 'Desconhecido' || r.region === 'Desconhecida') return false;
+        if (exceptKey !== 'product' && state.product && r.product_name !== state.product) return false;
+        if (exceptKey !== 'region' && state.region && r.region !== state.region) return false;
+        if (exceptKey !== 'method' && state.method && r.payment_method !== state.method) return false;
+        return true;
+      }};
+
+      const cashFiltersOk = (r, exceptKey) => {{
+        if (r.region === 'Desconhecido' || r.region === 'Desconhecida') return false;
+        if (exceptKey !== 'product' && state.product && r.product_name !== state.product) return false;
+        if (exceptKey !== 'region' && state.region && r.region !== state.region) return false;
+        if (exceptKey !== 'method' && state.method && r.payment_method !== state.method) return false;
         return true;
       }};
 
@@ -491,6 +637,37 @@ def _html(
         }}))
         .filter(r => r.month && r.month !== 'NaT')
         .filter(r => filtersOk(r, exceptKey));
+
+      const cashDueRowsAll = (exceptKey) => dataAllocDue
+        .map(r => ({{
+          ...r,
+          month: String(r.month),
+          expected: Number(r.expected) || 0,
+          received: Number(r.received) || 0,
+          recurring: toBool(r.recurring),
+        }}))
+        .filter(r => r.recurring === true)
+        .filter(r => cashFiltersOk(r, exceptKey));
+
+      const cashPayRowsAll = (exceptKey) => dataAllocPay
+        .map(r => ({{
+          ...r,
+          month: String(r.month),
+          expected: Number(r.expected) || 0,
+          received: Number(r.received) || 0,
+          recurring: toBool(r.recurring),
+        }}))
+        .filter(r => r.month && r.month !== 'NaT')
+        .filter(r => r.recurring === true)
+        .filter(r => cashFiltersOk(r, exceptKey));
+
+      const recMaturedRowsAll = (exceptKey) => dataRecMatured
+        .map(r => ({{
+          ...r,
+          expected: Number(r.expected) || 0,
+          received: Number(r.received) || 0,
+        }}))
+        .filter(r => recFiltersOk(r, exceptKey));
 
       const toggleFilter = (key, value) => {{
         if (state[key] === value) state[key] = null;
@@ -532,6 +709,23 @@ def _html(
         return out.slice(0, topN);
       }};
 
+      const aggRecBy = (rows, key, topN=12) => {{
+        const m = new Map();
+        for (const r of rows) {{
+          const k = r[key] || 'Desconhecido';
+          const cur = m.get(k) || {{ exp:0, rec:0 }};
+          cur.exp += r.expected;
+          cur.rec += r.received;
+          m.set(k, cur);
+        }}
+        const out = Array.from(m.entries()).map(([k,v]) => {{
+          const inad = v.exp > 0 ? Math.max(0, 1 - v.rec/v.exp) : 0;
+          return {{ k, ...v, inad }};
+        }});
+        out.sort((a,b) => b.inad - a.inad);
+        return out.slice(0, topN);
+      }};
+
       const aggMonthly = (rows) => {{
         const m = new Map();
         for (const r of rows) {{
@@ -551,7 +745,10 @@ def _html(
 
       const buildFilters = () => {{
         const allProd = uniq(byKey(dataAllocDue, 'product_name')).sort();
-        const allReg = uniq(byKey(dataAllocDue, 'region')).sort();
+        const allReg = uniq(byKey(dataAllocDue, 'region'))
+          .map(v => (v === null || v === undefined) ? '' : String(v).trim())
+          .filter(v => v && v !== 'Desconhecido' && v !== 'Desconhecida')
+          .sort();
         const allMet = uniq(byKey(dataAllocDue, 'payment_method')).sort();
 
         const sel = (id, label, values) => {{
@@ -614,36 +811,42 @@ def _html(
       }};
 
       const setKpis = () => {{
-        const rowsDueAll = allocDueRowsAll();
-        const cutoff = cutoffMonth(allocPayRowsAll()) || cutoffMonth(rowsDueAll);
-        const rows = observedRows(rowsDueAll, cutoff);
-        const t = aggTotals(rows);
-        document.getElementById('kpiEsperada').textContent = fmtMoney(t.exp);
-        document.getElementById('kpiRecebida').textContent = fmtMoney(t.rec);
-        document.getElementById('kpiInad').textContent = fmtPct(t.inad);
+        const recRows = recMaturedRowsAll();
+        const tRec = aggTotals(recRows.map(r => ({{...r, recurring: true}})));
+        document.getElementById('kpiEsperada').textContent = fmtMoney(tRec.exp);
+        document.getElementById('kpiRecebida').textContent = fmtMoney(tRec.rec);
+        document.getElementById('kpiInad').textContent = fmtPct(tRec.inad);
         document.getElementById('kpiForma').textContent = state.method || 'Todas';
 
         const p = state.product || '*';
         const r = state.region || '*';
         const m = state.method || '*';
-        const recKey = (state.recurring === null) ? 'all' : (state.recurring ? '1' : '0');
-        const row = SALES_CUBE.get(salesKey(p, r, m, recKey));
-        const vendas = Number(row?.vendas || 0);
-        const clientes = Number(row?.clientes || 0);
-        const pctRec = Number(row?.pct_recorrentes || 0);
+        const rowAll = SALES_CUBE.get(salesKey(p, r, m, 'all'));
+        const vendas = Number(rowAll?.vendas || 0);
+        const clientes = Number(rowAll?.clientes || 0);
+        const vendasRec = Number(rowAll?.vendas_rec || 0);
+        const vendasNorm = Math.max(0, vendas - vendasRec);
+        const pctRec = vendas > 0 ? (vendasRec / vendas) : 0;
         document.getElementById('kpiVendas').textContent = vendas.toLocaleString('pt-BR');
+        document.getElementById('kpiVendasNorm').textContent = vendasNorm.toLocaleString('pt-BR');
+        document.getElementById('kpiVendasRec').textContent = vendasRec.toLocaleString('pt-BR');
         document.getElementById('kpiClientes').textContent = clientes.toLocaleString('pt-BR');
         document.getElementById('kpiRecShare').textContent = fmtPct(pctRec);
       }};
 
       const renderProd = () => {{
-        const cutoff = cutoffMonth(allocPayRowsAll()) || cutoffMonth(allocDueRowsAll());
-        const rows = observedRows(allocDueRowsAll('product'), cutoff);
-        const agg = aggBy(rows, 'product_name', 10);
-        const y = agg.map(x => x.k).reverse();
+        const rows = recMaturedRowsAll('product');
+        const agg = aggRecBy(rows, 'product_name', 10);
+        const yFull = agg.map(x => x.k).reverse();
         const x = agg.map(x => x.inad*100).reverse();
-        const cd = agg.map(x => [x.exp, x.rec]).reverse();
-        const colors = y.map(name =>
+        const maxX = x.length ? Math.max(...x, 0) : 0;
+        const txt = x.map(v => Number(v || 0).toLocaleString('pt-BR', {{ minimumFractionDigits: 2, maximumFractionDigits: 2 }}) + '%');
+        const y = yFull.map((s) => {{
+          const v = String(s || '');
+          return v.length > 28 ? (v.slice(0, 28) + '...') : v;
+        }});
+        const cd = agg.map(x => [x.k, x.exp, x.rec]).reverse();
+        const colors = yFull.map(name =>
           state.product ? (name === state.product ? 'rgba(124, 92, 255, 0.95)' : 'rgba(124, 92, 255, 0.30)') : 'rgba(124, 92, 255, 0.75)'
         );
 
@@ -653,16 +856,23 @@ def _html(
             orientation: 'h',
             x: x,
             y: y,
+            text: txt,
+            textposition: 'outside',
+            textangle: 0,
+            textfont: {{ color: 'rgba(232, 237, 247, 0.92)', size: 12 }},
+            cliponaxis: false,
             marker: {{ color: colors }},
             customdata: cd,
-            hovertemplate: 'Produto: %{y}<br>% Inadimplência: %{x:.2f}%<br>Esperado: R$ %{customdata[0]:,.0f}<br>Recebido: R$ %{customdata[1]:,.0f}<extra></extra>'
+            hoverlabel: {{ namelength: -1 }},
+            hovertemplate: 'Produto: %{customdata[0]}<br>% Inadimplência: %{x:.2f}%<br>Esperado: R$ %{customdata[1]:,.0f}<br>Recebido: R$ %{customdata[2]:,.0f}<extra></extra>'
           }}],
           layout: {{
-            margin: {{l: 160, r: 20, t: 10, b: 30}},
+            margin: {{l: 170, r: 30, t: 10, b: 10}},
             paper_bgcolor: 'rgba(0,0,0,0)',
             plot_bgcolor: 'rgba(0,0,0,0)',
-            xaxis: {{ title: '%', gridcolor: 'rgba(255,255,255,0.08)' }},
-            yaxis: {{ automargin: true }},
+            xaxis: {{ showticklabels: false, showgrid: false, zeroline: false, title: '', range: [0, maxX*1.12] }},
+            yaxis: {{ automargin: true, tickfont: {{ size: 12 }} }},
+            bargap: 0.28,
             height: 340,
             autosize: true
           }},
@@ -672,18 +882,19 @@ def _html(
         const div = document.getElementById('plotProd');
         if (div && div.removeAllListeners) div.removeAllListeners('plotly_click');
         div.on('plotly_click', (ev) => {{
-          const v = ev.points?.[0]?.y;
+          const v = ev.points?.[0]?.customdata?.[0];
           if (!v) return;
           toggleFilter('product', v);
         }});
       }};
 
       const renderReg = () => {{
-        const cutoff = cutoffMonth(allocPayRowsAll()) || cutoffMonth(allocDueRowsAll());
-        const rows = observedRows(allocDueRowsAll('region'), cutoff);
-        const agg = aggBy(rows, 'region', 12);
+        const rows = recMaturedRowsAll('region');
+        const agg = aggRecBy(rows, 'region', 12);
         const y = agg.map(x => x.k).reverse();
         const x = agg.map(x => x.inad*100).reverse();
+        const maxX = x.length ? Math.max(...x, 0) : 0;
+        const txt = x.map(v => Number(v || 0).toLocaleString('pt-BR', {{ minimumFractionDigits: 2, maximumFractionDigits: 2 }}) + '%');
         const cd = agg.map(x => [x.exp, x.rec]).reverse();
         const colors = y.map(name =>
           state.region ? (name === state.region ? 'rgba(99, 179, 237, 0.95)' : 'rgba(99, 179, 237, 0.28)') : 'rgba(99, 179, 237, 0.75)'
@@ -691,13 +902,18 @@ def _html(
         Plotly.react('plotReg', [{{
           type:'bar', orientation:'h',
           x, y, marker:{{color: colors}},
+          text: txt,
+          textposition: 'outside',
+          textangle: 0,
+          textfont: {{ color: 'rgba(232, 237, 247, 0.92)', size: 12 }},
+          cliponaxis: false,
           customdata: cd,
           hovertemplate: 'Região: %{y}<br>% Inadimplência: %{x:.2f}%<br>Esperado: R$ %{customdata[0]:,.0f}<br>Recebido: R$ %{customdata[1]:,.0f}<extra></extra>'
         }}], {{
-          margin: {{l: 160, r: 20, t: 10, b: 30}},
+          margin: {{l: 160, r: 30, t: 10, b: 10}},
           paper_bgcolor: 'rgba(0,0,0,0)',
           plot_bgcolor: 'rgba(0,0,0,0)',
-          xaxis: {{ title: '%', gridcolor: 'rgba(255,255,255,0.08)' }},
+          xaxis: {{ showticklabels: false, showgrid: false, zeroline: false, title: '', range: [0, maxX*1.12] }},
           height: 340,
           autosize: true
         }}, PLOTLY_CONFIG);
@@ -711,19 +927,25 @@ def _html(
       }};
 
       const renderForma = () => {{
-        const cutoff = cutoffMonth(allocPayRowsAll()) || cutoffMonth(allocDueRowsAll());
-        const rows = observedRows(allocDueRowsAll('method'), cutoff);
-        const agg = aggBy(rows, 'payment_method', 12);
+        const rows = recMaturedRowsAll('method');
+        const agg = aggRecBy(rows, 'payment_method', 12);
         agg.sort((a,b) => b.exp - a.exp);
         const x = agg.map(x => x.k);
         const inad = agg.map(x => x.inad*100);
-        const recShare = x.map((met) => {{
+        const inadTxt = inad.map(v => Number(v || 0).toLocaleString('pt-BR', {{ minimumFractionDigits: 2, maximumFractionDigits: 2 }}) + '%');
+        const vendasRec = x.map((met) => {{
           const p = state.product || '*';
           const r = state.region || '*';
           const row = SALES_CUBE.get(salesKey(p, r, met, 'all'));
-          return Number(row?.pct_recorrentes || 0) * 100;
+          return Number(row?.vendas_rec || 0);
         }});
-        const cd = agg.map(x => [x.exp, x.rec, x.expRec]);
+        const vendasTxt = vendasRec.map(v => {{
+          const n = Number(v || 0);
+          if (n >= 1_000_000) return (n/1_000_000).toLocaleString('pt-BR', {{ maximumFractionDigits: 1 }}) + ' Mi';
+          if (n >= 1_000) return (n/1_000).toLocaleString('pt-BR', {{ maximumFractionDigits: 1 }}) + ' Mil';
+          return n.toLocaleString('pt-BR');
+        }});
+        const cd = agg.map(x => [x.exp, x.rec]);
         const barColors = x.map(name =>
           state.method ? (name === state.method ? 'rgba(124, 92, 255, 0.90)' : 'rgba(124, 92, 255, 0.28)') : 'rgba(124, 92, 255, 0.65)'
         );
@@ -733,25 +955,32 @@ def _html(
             x, y: inad,
             name: '% Inadimplência',
             marker: {{ color: barColors }},
+            text: inadTxt,
+            textposition: 'inside',
+            insidetextanchor: 'middle',
+            textfont: {{ color: 'rgba(232, 237, 247, 0.92)', size: 12 }},
             customdata: cd,
             hovertemplate: 'Forma: %{x}<br>% Inadimplência: %{y:.2f}%<br>Esperado: R$ %{customdata[0]:,.0f}<br>Recebido: R$ %{customdata[1]:,.0f}<extra></extra>'
           }},
           {{
             type: 'scatter',
-            x, y: recShare,
-            name: '% Recorrentes',
-            mode: 'lines+markers',
+            x, y: vendasRec,
+            name: 'Vendas Recorrentes',
+            mode: 'lines+markers+text',
+            text: vendasTxt,
+            textposition: 'top center',
+            textfont: {{ color: 'rgba(232, 237, 247, 0.92)', size: 12 }},
             yaxis: 'y2',
             line: {{ color: 'rgba(232, 237, 247, 0.85)' }},
-            hovertemplate: 'Forma: %{x}<br>% Recorrentes: %{y:.2f}%<extra></extra>'
+            hovertemplate: 'Forma: %{x}<br>Vendas recorrentes: %{y:,.0f}<extra></extra>'
           }}
         ], {{
           margin: {{l: 60, r: 60, t: 10, b: 40}},
           paper_bgcolor: 'rgba(0,0,0,0)',
           plot_bgcolor: 'rgba(0,0,0,0)',
           barmode: 'group',
-          yaxis: {{ title: '% Inadimplência', gridcolor: 'rgba(255,255,255,0.08)' }},
-          yaxis2: {{ title: '% Recorrentes', overlaying: 'y', side: 'right', showgrid: false }},
+          yaxis: {{ showticklabels: false, showgrid: false, zeroline: false }},
+          yaxis2: {{ overlaying: 'y', side: 'right', showgrid: false, showticklabels: false, zeroline: false }},
           legend: {{ orientation: 'h', y: 1.2 }},
           height: 360,
           autosize: true
@@ -766,15 +995,18 @@ def _html(
       }};
 
       const renderCash = () => {{
-        const dueAll = allocDueRowsAll();
-        const payAll = allocPayRowsAll();
-        const cutoff = cutoffMonth(payAll) || cutoffMonth(dueAll);
+        const dueAll = cashDueRowsAll();
+        const payAll = cashPayRowsAll();
         const expAgg = aggMonthly(dueAll);
         const recAgg = aggMonthly(payAll);
         const expMap = new Map(expAgg.map(x => [x.month, x.exp]));
         const recMap = new Map(recAgg.map(x => [x.month, x.rec]));
         const monthsAll = uniq([...Array.from(expMap.keys()), ...Array.from(recMap.keys())]).sort();
-        const months = cutoff ? monthsAll.filter(m => m <= cutoff) : monthsAll;
+        const months = monthsAll;
+        const xDates = months.map(m => String(m).slice(0, 7) + '-01');
+        const wrap = document.getElementById('plotCashWrap');
+        const wrapW = wrap ? wrap.clientWidth : 0;
+        const targetW = Math.max(wrapW || 0, Math.min(2600, Math.max(1100, xDates.length * 36)));
 
         const expected = months.map(m => expMap.get(m) || 0);
         const received = months.map(m => recMap.get(m) || 0);
@@ -798,33 +1030,25 @@ def _html(
         Plotly.react('plotCash', [
           {{
             type: 'scatter',
-            x: months, y: received,
-            name: 'Receita real',
+            x: xDates, y: received,
+            name: 'Receita Real Fluxo de Caixa',
             mode: 'lines',
             fill: 'tozeroy',
-            line: {{ color: 'rgba(99, 179, 237, 1)', width: 2 }},
-            fillcolor: 'rgba(99, 179, 237, 0.25)',
+            line: {{ color: 'rgba(124, 92, 255, 1)', width: 2 }},
+            fillcolor: 'rgba(124, 92, 255, 0.25)',
             customdata: custom,
-            hovertemplate: 'Mês: %{x}<br>Recebido: R$ %{customdata[0]:,.0f}<br>Esperado: R$ %{customdata[1]:,.0f}<br>Inadimplência (R$): %{customdata[2]:,.0f}<br>% Inadimplência: %{customdata[3]:.1%}<extra></extra>'
+            hovertemplate: 'Mês: %{x|%m/%Y}<br>Recebido: R$ %{customdata[0]:,.0f}<br>Esperado: R$ %{customdata[1]:,.0f}<br>Inadimplência (R$): %{customdata[2]:,.0f}<br>% Inadimplência: %{customdata[3]:.1%}<extra></extra>'
           }},
           {{
             type: 'scatter',
-            x: months, y: expected,
-            name: 'Inadimplência (gap)',
+            x: xDates, y: expected,
             mode: 'lines',
-            fill: 'tonexty',
-            line: {{ color: 'rgba(0,0,0,0)', width: 0 }},
-            fillcolor: 'rgba(251, 191, 36, 0.18)',
+            fill: 'tozeroy',
+            line: {{ color: 'rgba(233, 214, 170, 0.95)', width: 2 }},
+            fillcolor: 'rgba(233, 214, 170, 0.28)',
             customdata: custom,
-            hovertemplate: 'Mês: %{x}<br>Recebido: R$ %{customdata[0]:,.0f}<br>Esperado: R$ %{customdata[1]:,.0f}<br>Inadimplência (R$): %{customdata[2]:,.0f}<br>% Inadimplência: %{customdata[3]:.1%}<extra></extra>'
-          }},
-          {{
-            type: 'scatter',
-            x: months, y: expected,
-            name: 'Receita esperada',
-            mode: 'lines',
-            line: {{ color: 'rgba(232, 237, 247, 0.85)', width: 2 }},
-            hovertemplate: 'Mês: %{x}<br>Esperado: R$ %{y:,.0f}<extra></extra>'
+            hovertemplate: 'Mês: %{x|%m/%Y}<br>Recebido: R$ %{customdata[0]:,.0f}<br>Esperado: R$ %{customdata[1]:,.0f}<br>Inadimplência (R$): %{customdata[2]:,.0f}<br>% Inadimplência: %{customdata[3]:.1%}<extra></extra>',
+            name: 'Receita Esperada Fluxo de Caixa'
           }}
         ], {{
           margin: {{l: 60, r: 20, t: 10, b: 40}},
@@ -832,9 +1056,14 @@ def _html(
           plot_bgcolor: 'rgba(0,0,0,0)',
           legend: {{ orientation: 'h', y: 1.2 }},
           yaxis: {{ title: 'R$', gridcolor: 'rgba(255,255,255,0.08)' }},
-          xaxis: {{ gridcolor: 'rgba(255,255,255,0.06)' }},
+          xaxis: {{
+            type: 'date',
+            gridcolor: 'rgba(255,255,255,0.06)',
+            tickformat: '%m/%Y'
+          }},
           height: 520,
-          autosize: true
+          width: targetW,
+          autosize: false
         }}, PLOTLY_CONFIG);
       }};
 
@@ -898,19 +1127,51 @@ def _html(
       const renderCohort = () => {{
         const cutoff = cutoffMonth(allocPayRowsAll()) || cutoffMonth(allocDueRowsAll());
         const rows = cohortRows(cutoff);
-        const sum = cohortSummary(rows);
-        let exp=0, rec=0;
-        for (const r of sum) {{ exp += r.expected; rec += r.received; }}
-        const inad = exp > 0 ? Math.max(0, 1 - rec/exp) : 0;
-        document.getElementById('kpiCohEsp').textContent = fmtMoney(exp);
-        document.getElementById('kpiCohRec').textContent = fmtMoney(rec);
-        document.getElementById('kpiCohInad').textContent = fmtPct(inad);
+        const sum0 = cohortSummary(rows);
+        const COH_START = '2020-09';
+        const COH_END = '2024-12';
+        const sum = sum0.filter(r => r.cohort >= COH_START && r.cohort <= COH_END);
+        const rowsInRange = rows.filter(r => String(r.cohort) >= COH_START && String(r.cohort) <= COH_END);
 
         const x = sum.map(r => r.cohort);
+        const xDates = x.map(c => String(c).slice(0, 7) + '-01');
         const inadY = sum.map(r => r.inad*100);
+
+        let expParc = 0, recParc = 0;
+        for (const r of dataRecMaturedFact) {{
+          const pm = String(r.purchase_month);
+          if (pm < COH_START || pm > COH_END) continue;
+          if (state.product && String(r.product_name) !== state.product) continue;
+          if (state.region && String(r.region) !== state.region) continue;
+          if (state.method && String(r.payment_method) !== state.method) continue;
+          expParc += Number(r.expected) || 0;
+          recParc += Number(r.received) || 0;
+        }}
+
+        let vendas = 0, vendasRec = 0;
+        for (const r of dataSalesCohort) {{
+          const c = String(r.cohort);
+          if (c < COH_START || c > COH_END) continue;
+          const product = String(r.product_name);
+          const region = String(r.region);
+          const method = String(r.payment_method);
+          if (state.product && product !== state.product) continue;
+          if (state.region && region !== state.region) continue;
+          if (state.method && method !== state.method) continue;
+          const v = Number(r.vendas) || 0;
+          vendas += v;
+          if (toBool(r.recurring)) vendasRec += v;
+        }}
+        const pctRec = vendas > 0 ? (vendasRec / vendas) : 0;
+        document.getElementById('kpiCohEspParc').textContent = fmtMoney(expParc);
+        document.getElementById('kpiCohRecParc').textContent = fmtMoney(recParc);
+        document.getElementById('kpiCohVendas').textContent = vendas.toLocaleString('pt-BR');
+        document.getElementById('kpiCohPctRec').textContent = fmtPct(pctRec);
+
         const recMap = new Map();
         for (const r of dataSalesCohort) {{
           const cohort = String(r.cohort);
+          if (cohort < COH_START || cohort > COH_END) continue;
           const product = String(r.product_name);
           const region = String(r.region);
           const method = String(r.payment_method);
@@ -935,24 +1196,24 @@ def _html(
         Plotly.react('plotCohSummary', [
           {{
             type:'scatter',
-            x, y: inadY,
+            x: xDates, y: inadY,
             name:'% Inadimplência',
             mode:'lines',
             fill:'tozeroy',
             line:{{color:'rgba(239, 68, 68, 1)', width:2}},
             fillcolor:'rgba(239, 68, 68, 0.20)',
             customdata: sum.map(r => [r.received, r.expected]),
-            hovertemplate:'Cohort: %{x}<br>% Inadimplência: %{y:.2f}%<br>Recebido (acum.): R$ %{customdata[0]:,.0f}<br>Esperado (acum.): R$ %{customdata[1]:,.0f}<extra></extra>'
+            hovertemplate:'Mês: %{x|%m/%Y}<br>% Inadimplência: %{y:.2f}%<br>Recebido (acum.): R$ %{customdata[0]:,.0f}<br>Esperado (acum.): R$ %{customdata[1]:,.0f}<extra></extra>'
           }},
           {{
             type:'scatter',
-            x, y: recY,
+            x: xDates, y: recY,
             name:'% Recorrentes',
             mode:'lines',
             fill:'tozeroy',
             line:{{color:'rgba(99, 179, 237, 1)', width:2}},
             fillcolor:'rgba(99, 179, 237, 0.16)',
-            hovertemplate:'Cohort: %{x}<br>% Recorrentes: %{y:.2f}%<extra></extra>'
+            hovertemplate:'Mês: %{x|%m/%Y}<br>% Recorrentes: %{y:.2f}%<extra></extra>'
           }}
         ], {{
           margin: {{l: 60, r: 20, t: 10, b: 40}},
@@ -960,6 +1221,12 @@ def _html(
           plot_bgcolor: 'rgba(0,0,0,0)',
           legend: {{ orientation: 'h', y: 1.2 }},
           yaxis: {{ title: '%', gridcolor: 'rgba(255,255,255,0.08)' }},
+          xaxis: {{
+            type: 'date',
+            range: ['2020-09-01', '2024-12-31'],
+            tickformat: '%m/%Y',
+            gridcolor: 'rgba(255,255,255,0.06)'
+          }},
           height: 520,
           autosize: true
         }}, PLOTLY_CONFIG);
@@ -970,7 +1237,7 @@ def _html(
         thead.innerHTML = '<tr><th>Cohort</th><th>Receita Esperada</th><th>Receita Real</th><th>% Inadimplência</th><th>% Recorrentes</th></tr>';
         tbl.appendChild(thead);
         const tbody = document.createElement('tbody');
-        for (const r of sum.slice(-36)) {{
+        for (const r of sum) {{
           const idx = sum.findIndex(x => x.cohort === r.cohort);
           const recShare = (idx >= 0) ? recShareArr[idx] : 0;
           const tr = document.createElement('tr');
@@ -979,7 +1246,7 @@ def _html(
         }}
         tbl.appendChild(tbody);
 
-        renderCohortDetail(rows);
+        renderCohortDetail(rowsInRange);
       }};
 
       const renderCohortDetail = (rows) => {{
@@ -1061,7 +1328,7 @@ def _html(
 
       const loadMd = async () => {{
         try {{
-          const r = await fetch('./respostas_empresa.md');
+          const r = await fetch('./respostas_empresa.md?ts=' + Date.now());
           const txt = await r.text();
           const esc = (s) => s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
           const html = esc(txt).split('\\n').map(line => {{
@@ -1108,6 +1375,7 @@ def _html(
           const ttl = b.getAttribute('title') || '';
           const top = document.getElementById('topTitle');
           if (top && ttl) top.textContent = ttl.toUpperCase();
+          if (tabId === 'tab-respostas') loadMd();
           setTimeout(resizeAll, 60);
         }}));
       }};
@@ -1127,6 +1395,8 @@ def _html(
         .replace("__DATA_COHORT__", payload_cohort)
         .replace("__DATA_SALES_CUBE__", payload_sales_cube)
         .replace("__DATA_SALES_COHORT__", payload_sales_cohort)
+        .replace("__DATA_REC_MATURED__", payload_rec_matured)
+        .replace("__DATA_REC_MATURED_FACT__", payload_rec_matured_fact)
     )
 
 
@@ -1137,6 +1407,8 @@ def main() -> None:
     alloc_pay_dim = _prep_pay_dim(sales, allocated)
     sales_cube = _prep_sales_cube(sales)
     sales_cohort = _prep_sales_cohort_dim(sales)
+    rec_matured_dim = _prep_recurring_matured_dim(sales, allocated)
+    rec_matured_fact = _prep_recurring_matured_fact(sales, allocated)
     cohort_dim = _prep_cohort_dim(sales, allocated)
 
     data_alloc_due = alloc_due_dim.rename(
@@ -1150,9 +1422,20 @@ def main() -> None:
     ).to_dict(orient="records")
     data_sales_cube = sales_cube.to_dict(orient="records")
     data_sales_cohort = sales_cohort.to_dict(orient="records")
+    data_rec_matured = rec_matured_dim.to_dict(orient="records")
+    data_rec_matured_fact = rec_matured_fact.to_dict(orient="records")
 
     (REPORTS_DIR / "dashboard.html").write_text(
-        _html(data_alloc_due, data_alloc_pay, data_cohort, data_sales_cube, data_sales_cohort), encoding="utf-8"
+        _html(
+            data_alloc_due,
+            data_alloc_pay,
+            data_cohort,
+            data_sales_cube,
+            data_sales_cohort,
+            data_rec_matured,
+            data_rec_matured_fact,
+        ),
+        encoding="utf-8",
     )
     print(str(REPORTS_DIR / "dashboard.html"))
 

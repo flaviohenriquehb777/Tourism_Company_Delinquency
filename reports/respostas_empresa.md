@@ -59,14 +59,17 @@ Este documento resume as respostas para as perguntas levantadas pela empresa, em
 ## 5) Política de Juros cobre as perdas por inadimplência?
 
 **Resposta**
-- A taxa de juros de referência do case é **2,49% a.m.**. A cobertura depende do volume de perdas (contratos maduros). O dashboard traz o indicador de cobertura estimada e o split recorrente vs tradicional.
+- A taxa de juros de referência do case é **2,49% a.m.**. Considerando **apenas o parcelamento recorrente** e avaliando perdas em contratos **maduros**, a taxa **não cobre** a inadimplência observada: os juros estimados cobrem apenas parte das perdas.
 
 **Evidências**
-- Cobertura estimada: 9.85x
-- Recorrente: 0.84x; Tradicional: N/D
+- Base (recorrentes maduros): Receita esperada **R$ 39,76 Mi**, receita real **R$ 29,36 Mi**, perda **R$ 10,40 Mi**
+- Juros estimados a 2,49% a.m.: **R$ 4,03 Mi**
+- Cobertura (juros ÷ perdas): **0,39x** (não cobre)
+- Taxa de break-even estimada: **6,43% a.m.**
 
 **Onde olhar no dashboard**
-- Aba **Respostas**: ver o bloco “Política de Juros” no relatório embutido.
+- Aba **Informações Gerais**: *% Inadimplência (financeira)* do recorrente maduro e o gráfico por Forma de Pagamento.
+- Aba **Respostas**: seção “Política de Juros”.
 
 ## Observações de Apresentação
 
