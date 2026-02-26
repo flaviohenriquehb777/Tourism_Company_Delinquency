@@ -39,7 +39,7 @@ Projeto de análise de inadimplência em pagamentos recorrentes mensais na empre
 - reports: dashboard.html, respostas_empresa.md e business_report.md
 - docs: artefatos para GitHub Pages (index.html, dashboard.html, favicon.ico, respostas_empresa.md)
 - src: utilitários de carregamento, métricas, visualização e relatório
-- dashboard_viasul.py: dashboard com abas e filtros globais (Streamlit)
+- scripts/dashboard_viasul.py: dashboard com abas e filtros globais (Streamlit)
 
 ## Base de Dados
 - Base principal: Base Pagamentos.xlsx
@@ -78,7 +78,7 @@ Projeto de análise de inadimplência em pagamentos recorrentes mensais na empre
 6. Atualizar GitHub Pages (docs/):
    - `python scripts/build_pages.py`
 7. Rodar o dashboard com filtros e abas (Streamlit):
-   - `streamlit run dashboard_viasul.py`
+-   - `streamlit run scripts/dashboard_viasul.py`
 
 ## Publicação no GitHub Pages
 - Ative o GitHub Pages em **Settings → Pages**.
