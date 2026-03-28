@@ -104,6 +104,100 @@ def _prep_pay_dim(sales: pd.DataFrame, allocated: pd.DataFrame) -> pd.DataFrame:
     return g
 
 
+def _prep_sales_cube(sales: pd.DataFrame) -> pd.DataFrame:
+    s = sales.copy()
+    s["contract_id"] = s["contract_id"].astype(str)
+    s["customer_id"] = s["customer_id"].astype(str)
+    s["recurring"] = s["recurring"].fillna(False).astype(bool)
+    s["product_name"] = s["product_name"].fillna("Desconhecido").astype(str)
+    s["region"] = s["region"].fillna("Desconhecida").astype(str)
+    s["payment_method"] = s["payment_method"].fillna("Desconhecida").astype(str)
+
+    all_dims = ["product_name", "region", "payment_method"]
+
+    def build(groups: list[str], include_recurring: bool) -> pd.DataFrame:
+        gcols = list(groups)
+        if include_recurring:
+            gcols = gcols + ["recurring"]
+        if gcols:
+            out = (
+                s.groupby(gcols, dropna=False)
+                .agg(
+                    vendas=("contract_id", "nunique"),
+                    clientes=("customer_id", "nunique"),
+                    vendas_rec=("recurring", "sum"),
+                )
+                .reset_index()
+            )
+        else:
+            out = pd.DataFrame(
+                {
+                    "vendas": [int(s["contract_id"].nunique())],
+                    "clientes": [int(s["customer_id"].nunique())],
+                    "vendas_rec": [int(s["recurring"].sum())],
+                }
+            )
+
+        for d in all_dims:
+            if d not in out.columns:
+                out[d] = "*"
+
+        if include_recurring:
+            out["recurring_filter"] = out["recurring"].map(lambda x: "1" if bool(x) else "0")
+            out = out.drop(columns=["recurring"])
+        else:
+            out["recurring_filter"] = "all"
+
+        out["pct_recorrentes"] = out.apply(
+            lambda r: float(r["vendas_rec"] / r["vendas"]) if float(r["vendas"]) else 0.0, axis=1
+        )
+        return out[["product_name", "region", "payment_method", "recurring_filter", "vendas", "clientes", "vendas_rec", "pct_recorrentes"]]
+
+    group_sets: list[list[str]] = [
+        [],
+        ["product_name"],
+        ["region"],
+        ["payment_method"],
+        ["product_name", "region"],
+        ["product_name", "payment_method"],
+        ["region", "payment_method"],
+        ["product_name", "region", "payment_method"],
+    ]
+
+    frames = []
+    for gs in group_sets:
+        frames.append(build(gs, include_recurring=False))
+        frames.append(build(gs, include_recurring=True))
+
+    cube = pd.concat(frames, ignore_index=True)
+    cube["vendas"] = pd.to_numeric(cube["vendas"], errors="coerce").fillna(0).astype(int)
+    cube["clientes"] = pd.to_numeric(cube["clientes"], errors="coerce").fillna(0).astype(int)
+    cube["vendas_rec"] = pd.to_numeric(cube["vendas_rec"], errors="coerce").fillna(0).astype(int)
+    cube["pct_recorrentes"] = pd.to_numeric(cube["pct_recorrentes"], errors="coerce").fillna(0.0).astype(float)
+    return cube
+
+
+def _prep_sales_cohort_dim(sales: pd.DataFrame) -> pd.DataFrame:
+    s = sales.copy()
+    s["contract_id"] = s["contract_id"].astype(str)
+    s["recurring"] = s["recurring"].fillna(False).astype(bool)
+    s["product_name"] = s["product_name"].fillna("Desconhecido").astype(str)
+    s["region"] = s["region"].fillna("Desconhecida").astype(str)
+    s["payment_method"] = s["payment_method"].fillna("Desconhecida").astype(str)
+    s["cohort"] = _month(s["purchase_date"])
+    s = s[s["cohort"].notna()].copy()
+
+    g = (
+        s.groupby(["cohort", "product_name", "region", "payment_method", "recurring"], dropna=False)
+        .agg(vendas=("contract_id", "nunique"))
+        .reset_index()
+        .sort_values(["cohort", "product_name"])
+    )
+    g["cohort"] = pd.to_datetime(g["cohort"], errors="coerce").dt.to_period("M").astype(str)
+    g["vendas"] = pd.to_numeric(g["vendas"], errors="coerce").fillna(0).astype(int)
+    return g
+
+
 def _prep_cohort_dim(sales: pd.DataFrame, allocated: pd.DataFrame) -> pd.DataFrame:
     s = sales.copy()
     a = allocated.copy()
@@ -133,7 +227,7 @@ def _prep_cohort_dim(sales: pd.DataFrame, allocated: pd.DataFrame) -> pd.DataFra
     a["expected_rec"] = a["expected"].where(a["recurring"] == True, 0.0)
 
     g = (
-        a.groupby(["cohort", "age", "product_name", "region", "payment_method"], as_index=False)
+        a.groupby(["cohort", "age", "product_name", "region", "payment_method", "recurring"], as_index=False)
         .agg(expected=("expected", "sum"), received=("received", "sum"), expected_rec=("expected_rec", "sum"))
         .sort_values(["cohort", "age"])
     )
@@ -143,10 +237,18 @@ def _prep_cohort_dim(sales: pd.DataFrame, allocated: pd.DataFrame) -> pd.DataFra
     return g
 
 
-def _html(data_alloc_due: list[dict], data_alloc_pay: list[dict], data_cohort: list[dict]) -> str:
+def _html(
+    data_alloc_due: list[dict],
+    data_alloc_pay: list[dict],
+    data_cohort: list[dict],
+    data_sales_cube: list[dict],
+    data_sales_cohort: list[dict],
+) -> str:
     payload_alloc_due = json.dumps(data_alloc_due, ensure_ascii=False)
     payload_alloc_pay = json.dumps(data_alloc_pay, ensure_ascii=False)
     payload_cohort = json.dumps(data_cohort, ensure_ascii=False)
+    payload_sales_cube = json.dumps(data_sales_cube, ensure_ascii=False)
+    payload_sales_cohort = json.dumps(data_sales_cohort, ensure_ascii=False)
 
     tpl = """<!doctype html>
 <html lang="pt-br">
@@ -310,6 +412,8 @@ def _html(data_alloc_due: list[dict], data_alloc_pay: list[dict], data_cohort: l
       const dataAllocDue = __DATA_ALLOC_DUE__;
       const dataAllocPay = __DATA_ALLOC_PAY__;
       const dataCohort = __DATA_COHORT__;
+      const dataSalesCube = __DATA_SALES_CUBE__;
+      const dataSalesCohort = __DATA_SALES_COHORT__;
 
       const state = {{
         product: null,
@@ -356,6 +460,16 @@ def _html(data_alloc_due: list[dict], data_alloc_pay: list[dict], data_cohort: l
         if (state.recurring === false && r.recurring !== false) return false;
         return true;
       }};
+
+      const salesKey = (p, r, m, recKey) => `${{p}}|${{r}}|${{m}}|${{recKey}}`;
+      const SALES_CUBE = (() => {{
+        const mp = new Map();
+        for (const row of dataSalesCube) {{
+          const k = salesKey(String(row.product_name), String(row.region), String(row.payment_method), String(row.recurring_filter));
+          mp.set(k, row);
+        }}
+        return mp;
+      }})();
 
       const allocDueRowsAll = (exceptKey) => dataAllocDue
         .map(r => ({{
@@ -507,12 +621,19 @@ def _html(data_alloc_due: list[dict], data_alloc_pay: list[dict], data_cohort: l
         document.getElementById('kpiEsperada').textContent = fmtMoney(t.exp);
         document.getElementById('kpiRecebida').textContent = fmtMoney(t.rec);
         document.getElementById('kpiInad').textContent = fmtPct(t.inad);
-        document.getElementById('kpiRecShare').textContent = fmtPct(t.recShare);
         document.getElementById('kpiForma').textContent = state.method || 'Todas';
 
-        const ids = uniq(rows.map(r => r.month + '|' + r.product_name + '|' + r.region + '|' + r.payment_method));
-        document.getElementById('kpiVendas').textContent = (ids.length).toLocaleString('pt-BR');
-        document.getElementById('kpiClientes').textContent = '—';
+        const p = state.product || '*';
+        const r = state.region || '*';
+        const m = state.method || '*';
+        const recKey = (state.recurring === null) ? 'all' : (state.recurring ? '1' : '0');
+        const row = SALES_CUBE.get(salesKey(p, r, m, recKey));
+        const vendas = Number(row?.vendas || 0);
+        const clientes = Number(row?.clientes || 0);
+        const pctRec = Number(row?.pct_recorrentes || 0);
+        document.getElementById('kpiVendas').textContent = vendas.toLocaleString('pt-BR');
+        document.getElementById('kpiClientes').textContent = clientes.toLocaleString('pt-BR');
+        document.getElementById('kpiRecShare').textContent = fmtPct(pctRec);
       }};
 
       const renderProd = () => {{
@@ -596,7 +717,12 @@ def _html(data_alloc_due: list[dict], data_alloc_pay: list[dict], data_cohort: l
         agg.sort((a,b) => b.exp - a.exp);
         const x = agg.map(x => x.k);
         const inad = agg.map(x => x.inad*100);
-        const recShare = agg.map(x => x.recShare*100);
+        const recShare = x.map((met) => {{
+          const p = state.product || '*';
+          const r = state.region || '*';
+          const row = SALES_CUBE.get(salesKey(p, r, met, 'all'));
+          return Number(row?.pct_recorrentes || 0) * 100;
+        }});
         const cd = agg.map(x => [x.exp, x.rec, x.expRec]);
         const barColors = x.map(name =>
           state.method ? (name === state.method ? 'rgba(124, 92, 255, 0.90)' : 'rgba(124, 92, 255, 0.28)') : 'rgba(124, 92, 255, 0.65)'
@@ -613,7 +739,7 @@ def _html(data_alloc_due: list[dict], data_alloc_pay: list[dict], data_cohort: l
           {{
             type: 'scatter',
             x, y: recShare,
-            name: '% Recorrentes (share)',
+            name: '% Recorrentes',
             mode: 'lines+markers',
             yaxis: 'y2',
             line: {{ color: 'rgba(232, 237, 247, 0.85)' }},
@@ -720,11 +846,14 @@ def _html(data_alloc_due: list[dict], data_alloc_pay: list[dict], data_cohort: l
           expected: Number(r.expected) || 0,
           received: Number(r.received) || 0,
           expected_rec: Number(r.expected_rec) || 0,
+          recurring: toBool(r.recurring),
         }}))
         .filter(r => {{
           if (state.product && r.product_name !== state.product) return false;
           if (state.region && r.region !== state.region) return false;
           if (state.method && r.payment_method !== state.method) return false;
+          if (state.recurring === true && r.recurring !== true) return false;
+          if (state.recurring === false && r.recurring !== false) return false;
           if (cutoffMonth && r.due_month && r.due_month > cutoffMonth) return false;
           return true;
         }});
@@ -755,13 +884,12 @@ def _html(data_alloc_due: list[dict], data_alloc_pay: list[dict], data_cohort: l
         const out = [];
         for (const [c, arr] of byC.entries()) {{
           arr.sort((a,b) => a.age-b.age);
-          let cumE=0, cumR=0, cumER=0;
+          let cumE=0, cumR=0;
           for (const r of arr) {{
-            cumE += r.expected; cumR += r.received; cumER += r.expected_rec;
+            cumE += r.expected; cumR += r.received;
           }}
           const inad = cumE > 0 ? Math.max(0, 1 - cumR/cumE) : 0;
-          const recShare = cumE > 0 ? (cumER/cumE) : 0;
-          out.push({{ cohort:c, expected:cumE, received:cumR, inad, recShare }});
+          out.push({{ cohort:c, expected:cumE, received:cumR, inad }});
         }}
         out.sort((a,b) => a.cohort.localeCompare(b.cohort));
         return out;
@@ -780,7 +908,30 @@ def _html(data_alloc_due: list[dict], data_alloc_pay: list[dict], data_cohort: l
 
         const x = sum.map(r => r.cohort);
         const inadY = sum.map(r => r.inad*100);
-        const recY = sum.map(r => r.recShare*100);
+        const recMap = new Map();
+        for (const r of dataSalesCohort) {{
+          const cohort = String(r.cohort);
+          const product = String(r.product_name);
+          const region = String(r.region);
+          const method = String(r.payment_method);
+          if (state.product && product !== state.product) continue;
+          if (state.region && region !== state.region) continue;
+          if (state.method && method !== state.method) continue;
+          const recFlag = toBool(r.recurring);
+          if (state.recurring === true && recFlag !== true) continue;
+          if (state.recurring === false && recFlag !== false) continue;
+          const cur = recMap.get(cohort) || {{ total: 0, rec: 0 }};
+          const v = Number(r.vendas) || 0;
+          cur.total += v;
+          if (recFlag) cur.rec += v;
+          recMap.set(cohort, cur);
+        }}
+        const recShareArr = sum.map(r => {{
+          const cur = recMap.get(r.cohort);
+          if (!cur || !cur.total) return 0;
+          return cur.rec / cur.total;
+        }});
+        const recY = recShareArr.map(v => v*100);
         Plotly.react('plotCohSummary', [
           {{
             type:'scatter',
@@ -796,7 +947,7 @@ def _html(data_alloc_due: list[dict], data_alloc_pay: list[dict], data_cohort: l
           {{
             type:'scatter',
             x, y: recY,
-            name:'% Recorrentes (share)',
+            name:'% Recorrentes',
             mode:'lines',
             fill:'tozeroy',
             line:{{color:'rgba(99, 179, 237, 1)', width:2}},
@@ -820,8 +971,10 @@ def _html(data_alloc_due: list[dict], data_alloc_pay: list[dict], data_cohort: l
         tbl.appendChild(thead);
         const tbody = document.createElement('tbody');
         for (const r of sum.slice(-36)) {{
+          const idx = sum.findIndex(x => x.cohort === r.cohort);
+          const recShare = (idx >= 0) ? recShareArr[idx] : 0;
           const tr = document.createElement('tr');
-          tr.innerHTML = `<td>${{r.cohort}}</td><td>${{fmtMoney(r.expected)}}</td><td>${{fmtMoney(r.received)}}</td><td>${{fmtPct(r.inad)}}</td><td>${{fmtPct(r.recShare)}}</td>`;
+          tr.innerHTML = `<td>${{r.cohort}}</td><td>${{fmtMoney(r.expected)}}</td><td>${{fmtMoney(r.received)}}</td><td>${{fmtPct(r.inad)}}</td><td>${{fmtPct(recShare)}}</td>`;
           tbody.appendChild(tr);
         }}
         tbl.appendChild(tbody);
@@ -972,6 +1125,8 @@ def _html(data_alloc_due: list[dict], data_alloc_pay: list[dict], data_cohort: l
         tpl.replace("__DATA_ALLOC_DUE__", payload_alloc_due)
         .replace("__DATA_ALLOC_PAY__", payload_alloc_pay)
         .replace("__DATA_COHORT__", payload_cohort)
+        .replace("__DATA_SALES_CUBE__", payload_sales_cube)
+        .replace("__DATA_SALES_COHORT__", payload_sales_cohort)
     )
 
 
@@ -980,6 +1135,8 @@ def main() -> None:
     sales, allocated = _load()
     alloc_due_dim = _prep_alloc_dim(sales, allocated)
     alloc_pay_dim = _prep_pay_dim(sales, allocated)
+    sales_cube = _prep_sales_cube(sales)
+    sales_cohort = _prep_sales_cohort_dim(sales)
     cohort_dim = _prep_cohort_dim(sales, allocated)
 
     data_alloc_due = alloc_due_dim.rename(
@@ -991,9 +1148,11 @@ def main() -> None:
     data_cohort = cohort_dim.rename(
         columns={"product_name": "product_name", "region": "region", "payment_method": "payment_method"}
     ).to_dict(orient="records")
+    data_sales_cube = sales_cube.to_dict(orient="records")
+    data_sales_cohort = sales_cohort.to_dict(orient="records")
 
     (REPORTS_DIR / "dashboard.html").write_text(
-        _html(data_alloc_due, data_alloc_pay, data_cohort), encoding="utf-8"
+        _html(data_alloc_due, data_alloc_pay, data_cohort, data_sales_cube, data_sales_cohort), encoding="utf-8"
     )
     print(str(REPORTS_DIR / "dashboard.html"))
 
