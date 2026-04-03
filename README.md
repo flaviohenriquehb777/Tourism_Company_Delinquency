@@ -10,9 +10,9 @@
 Visão completa e profissional da inadimplência em pagamentos recorrentes mensais, desde EDA e limpeza até respostas às perguntas de negócio, dashboard interativo em HTML e relatório editável.
 
 ## Sumário
-- [Visão Geral do Projeto](#visao-geral-do-projeto)
+- [Visão Geral do Modelo](#visao-geral-do-modelo)
 - [Objetivos da Análise](#objetivos-da-analise)
-- [Estrutura do Projeto](#estrutura-do-projeto)
+- [Estrutura do Modelo](#estrutura-do-modelo)
 - [Base de Dados](#base-de-dados)
 - [Metodologia de Análise](#metodologia-de-analise)
 - [Resultados Chave e Apresentação](#resultados-chave-e-apresentacao)
@@ -22,8 +22,8 @@ Visão completa e profissional da inadimplência em pagamentos recorrentes mensa
 - [Licença](#licenca)
 - [Contato](#contato)
 
-## Visão Geral do Projeto
-Projeto de análise de inadimplência em pagamentos recorrentes mensais na empresa de turismo, cobrindo EDA, limpeza, modelagem de cronogramas de parcelas, alocação de pagamentos, KPIs e visualização executiva. O foco é responder perguntas de negócios sobre mudanças estratégicas (ticket alto, expansão do recorrente, WhatsApp de cobrança, produtos premium) e política de juros.
+## Visão Geral do Modelo
+Modelo de análise de inadimplência em pagamentos recorrentes mensais na empresa de turismo, cobrindo EDA, limpeza, modelagem de cronogramas de parcelas, alocação de pagamentos, KPIs e visualização executiva. O foco é responder perguntas de negócios sobre mudanças estratégicas (ticket alto, expansão do recorrente, WhatsApp de cobrança, produtos premium) e política de juros.
 
 ## Objetivos da Análise
 - Medir impacto da priorização de ticket médio alto (jan/2021).
@@ -32,7 +32,7 @@ Projeto de análise de inadimplência em pagamentos recorrentes mensais na empre
 - Analisar oferta de produtos premium (ago/2024).
 - Verificar se a taxa de juros cobre perdas por inadimplência e sugerir diferenciação entre recorrente e tradicional.
 
-## Estrutura do Projeto
+## Estrutura do Modelo
 - data/raw: arquivos originais (.xlsx, .pdf)
 - data/processed: bases tratadas, cronograma e alocações
 - notebooks: fluxo 01 → 04
@@ -86,7 +86,7 @@ Projeto de análise de inadimplência em pagamentos recorrentes mensais na empre
 - URL do dashboard: https://flaviohenriquehb777.github.io/Tourism_Company_Delinquency/
 
 ## Licença
-- Este projeto está licenciado sob a licença MIT. Consulte [LICENSE.md](LICENSE.md).
+- Este modelo está licenciado sob a licença MIT. Consulte [LICENSE.md](LICENSE.md).
 
 ## Contato
 - Nome: **Flávio Henrique Barbosa**
